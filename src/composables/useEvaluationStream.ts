@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { createEvaluationStream } from '../api/evaluation'
 import type {
+  AnalysisProgressEvent,
   EvaluationCompleteEvent,
   EvaluationQuestion,
   NewQuestionEvent,
@@ -11,6 +12,7 @@ type ConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'c
 interface UseEvaluationStreamOptions {
   onNewQuestion?: (payload: NewQuestionEvent) => void
   onEvaluationComplete?: (payload: EvaluationCompleteEvent) => void
+  onAnalysisProgress?: (payload: AnalysisProgressEvent) => void
 }
 
 export function useEvaluationStream(options: UseEvaluationStreamOptions = {}) {
@@ -18,6 +20,7 @@ export function useEvaluationStream(options: UseEvaluationStreamOptions = {}) {
   const isAnalyzing = ref(false)
   const isComplete = ref(false)
   const report = ref<EvaluationCompleteEvent | null>(null)
+  const analysisFeed = ref<AnalysisProgressEvent[]>([])
   const connectionState = ref<ConnectionState>('idle')
   const errorMessage = ref('')
 
@@ -66,16 +69,31 @@ export function useEvaluationStream(options: UseEvaluationStreamOptions = {}) {
 
       currentQuestion.value = parsed.question
       isAnalyzing.value = false
+      analysisFeed.value = []
       options.onNewQuestion?.(parsed)
+    })
+
+    source.addEventListener('analysis_progress', (event) => {
+      const parsed = parseJson<AnalysisProgressEvent>((event as MessageEvent).data)
+      if (!parsed) return
+
+      analysisFeed.value = [...analysisFeed.value.slice(-11), parsed]
+      options.onAnalysisProgress?.(parsed)
     })
 
     source.addEventListener('evaluation_complete', (event) => {
       const parsed = parseJson<EvaluationCompleteEvent>((event as MessageEvent).data)
+      if (!parsed) {
+        connectionState.value = 'error'
+        errorMessage.value = '完成事件解析失败，等待后续有效消息。'
+        return
+      }
+
       isComplete.value = true
       isAnalyzing.value = false
       report.value = parsed
       connectionState.value = 'closed'
-      options.onEvaluationComplete?.(parsed ?? {})
+      options.onEvaluationComplete?.(parsed)
       disconnect()
     })
 
@@ -102,6 +120,7 @@ export function useEvaluationStream(options: UseEvaluationStreamOptions = {}) {
     activeSessionId = sessionId
     manuallyClosed = false
     isComplete.value = false
+    analysisFeed.value = []
     setupSource(sessionId)
   }
 
@@ -127,6 +146,7 @@ export function useEvaluationStream(options: UseEvaluationStreamOptions = {}) {
     isAnalyzing,
     isComplete,
     report,
+    analysisFeed,
     connectionState,
     errorMessage,
     connect,
